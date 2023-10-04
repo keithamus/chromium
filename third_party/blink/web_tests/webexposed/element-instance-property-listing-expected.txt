@@ -502,6 +502,8 @@ html element button
     property formMethod
     property formNoValidate
     property formTarget
+    property invokerAction
+    property invokerTargetElement
     property labels
     property name
     property popoverTargetAction
@@ -752,6 +754,8 @@ html element input
     property height
     property incremental
     property indeterminate
+    property invokerAction
+    property invokerTargetElement
     property labels
     property list
     property max
