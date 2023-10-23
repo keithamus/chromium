@@ -441,63 +441,84 @@ void HTMLFormControlElement::DefaultEventHandler(Event& event) {
           InvokeEvent::Create(event_type_names::kInvoke, action, this);
       invokee->DispatchEvent(*invokeEvent);
       if (!invokeEvent->defaultPrevented()) {
-        invokee->HandleInvokeInternal(action);
+        PopoverTriggerAction trigger = PopoverTriggerAction::kNone;
+        auto actionLower = action.LowerASCII();
+        if (actionLower == keywords::kAuto ||
+            actionLower == keywords::kTogglePopover.LowerASCII()) {
+          trigger = PopoverTriggerAction::kToggle;
+        } else if (actionLower == keywords::kShowPopover.LowerASCII()) {
+          trigger = PopoverTriggerAction::kShow;
+        } else if (actionLower == keywords::kHidePopover.LowerASCII()) {
+          trigger = PopoverTriggerAction::kHide;
+        }
+        if (invokee->PopoverType() != PopoverValueType::kNone &&
+            trigger != PopoverTriggerAction::kNone) {
+          HandlePopoverTriggering(invokee, trigger);
+        } else {
+          invokee->HandleInvokeInternal(actionLower);
+        }
       }
     } else {
       auto popover = popoverTargetElement();
       if (popover.popover) {
-        auto& document = GetDocument();
-        auto trigger_support = SupportsPopoverTriggering();
-        CHECK_NE(popover.action, PopoverTriggerAction::kNone);
-        CHECK_NE(trigger_support, PopoverTriggerSupport::kNone);
-        // Note that the order is: `mousedown` which runs popover light dismiss
-        // code, then (for clicked elements) focus is set to the clicked
-        // element, then |DOMActivate| runs here. Also note that the light
-        // dismiss code will not hide popovers when an activating element is
-        // clicked. Taking that together, if the clicked control is a triggering
-        // element for a popover, light dismiss will do nothing, focus will be
-        // set to the triggering element, then this code will run and will set
-        // focus to the previously focused element. If instead the clicked
-        // control is not a triggering element, then the light dismiss code will
-        // hide the popover and set focus to the previously focused element,
-        // then the normal focus management code will reset focus to the clicked
-        // control.
-        bool can_show = popover.popover->IsPopoverReady(
-                            PopoverTriggerAction::kShow,
-                            /*exception_state=*/nullptr,
-                            /*include_event_handler_text=*/true, &document) &&
-                        (popover.action == PopoverTriggerAction::kToggle ||
-                         popover.action == PopoverTriggerAction::kShow ||
-                         popover.action == PopoverTriggerAction::kHover);
-        bool can_hide = popover.popover->IsPopoverReady(
-                            PopoverTriggerAction::kHide,
-                            /*exception_state=*/nullptr,
-                            /*include_event_handler_text=*/true, &document) &&
-                        (popover.action == PopoverTriggerAction::kToggle ||
-                         popover.action == PopoverTriggerAction::kHide);
-        if (can_hide) {
-          popover.popover->HidePopoverInternal(
-              HidePopoverFocusBehavior::kFocusPreviousElement,
-              HidePopoverTransitionBehavior::kFireEventsAndWaitForTransitions,
-              /*exception_state=*/nullptr);
-        } else if (can_show) {
-          auto* button = DynamicTo<HTMLButtonElement>(this);
-          HTMLSelectListElement* selectlist =
-              button && RuntimeEnabledFeatures::HTMLSelectListElementEnabled()
-                  ? button->OwnerSelectList()
-                  : nullptr;
-          if (selectlist) {
-            if (!selectlist->IsDisabledFormControl()) {
-              selectlist->OpenListbox();
-            }
-          } else {
-            popover.popover->InvokePopover(this);
-          }
-        }
+        HandlePopoverTriggering(popover.popover, popover.action);
       }
     }
   }
   HTMLElement::DefaultEventHandler(event);
+}
+
+void HTMLFormControlElement::HandlePopoverTriggering(
+    HTMLElement* popover,
+    PopoverTriggerAction action) {
+  auto& document = GetDocument();
+  auto trigger_support = SupportsPopoverTriggering();
+  CHECK_NE(action, PopoverTriggerAction::kNone);
+  CHECK_NE(trigger_support, PopoverTriggerSupport::kNone);
+  // Note that the order is: `mousedown` which runs popover light dismiss
+  // code, then (for clicked elements) focus is set to the clicked
+  // element, then |DOMActivate| runs here. Also note that the light
+  // dismiss code will not hide popovers when an activating element is
+  // clicked. Taking that together, if the clicked control is a triggering
+  // element for a popover, light dismiss will do nothing, focus will be
+  // set to the triggering element, then this code will run and will set
+  // focus to the previously focused element. If instead the clicked
+  // control is not a triggering element, then the light dismiss code will
+  // hide the popover and set focus to the previously focused element,
+  // then the normal focus management code will reset focus to the clicked
+  // control.
+  bool can_show =
+      popover->IsPopoverReady(PopoverTriggerAction::kShow,
+                              /*exception_state=*/nullptr,
+                              /*include_event_handler_text=*/true, &document) &&
+      (action == PopoverTriggerAction::kToggle ||
+       action == PopoverTriggerAction::kShow ||
+       action == PopoverTriggerAction::kHover);
+  bool can_hide =
+      popover->IsPopoverReady(PopoverTriggerAction::kHide,
+                              /*exception_state=*/nullptr,
+                              /*include_event_handler_text=*/true, &document) &&
+      (action == PopoverTriggerAction::kToggle ||
+       action == PopoverTriggerAction::kHide);
+  if (can_hide) {
+    popover->HidePopoverInternal(
+        HidePopoverFocusBehavior::kFocusPreviousElement,
+        HidePopoverTransitionBehavior::kFireEventsAndWaitForTransitions,
+        /*exception_state=*/nullptr);
+  } else if (can_show) {
+    auto* button = DynamicTo<HTMLButtonElement>(this);
+    HTMLSelectListElement* selectlist =
+        button && RuntimeEnabledFeatures::HTMLSelectListElementEnabled()
+            ? button->OwnerSelectList()
+            : nullptr;
+    if (selectlist) {
+      if (!selectlist->IsDisabledFormControl()) {
+        selectlist->OpenListbox();
+      }
+    } else {
+      popover->InvokePopover(this);
+    }
+  }
 }
 
 void HTMLFormControlElement::SetHovered(bool hovered) {
