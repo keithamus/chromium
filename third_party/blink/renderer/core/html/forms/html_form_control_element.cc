@@ -422,103 +422,72 @@ void HTMLFormControlElement::setInvokeAction(const AtomicString& value) {
 }
 
 void HTMLFormControlElement::DefaultEventHandler(Event& event) {
+  // Buttons thaat aren't form participants might be Invoker buttons or Popover
+  // buttons.
   if (event.type() == event_type_names::kDOMActivate && IsInTreeScope() &&
       !IsDisabledFormControl() && (!Form() || !IsSuccessfulSubmitButton())) {
     HTMLElement* invokee = DynamicTo<HTMLElement>(
         GetElementAttribute(html_names::kInvoketargetAttr));
+    auto popover = popoverTargetElement();
+
+    // invoketarget & popovertarget shouldn't be combined, so warn.
+    if (invokee && popover.popover) {
+      ConsoleMessage* console_message = MakeGarbageCollected<ConsoleMessage>(
+          mojom::blink::ConsoleMessageSource::kOther,
+          mojom::blink::ConsoleMessageLevel::kWarning,
+          "popovertarget is ignored on elements with invoketarget set.");
+      console_message->SetNodes(GetDocument().GetFrame(),
+                                {this->GetDomNodeId()});
+      GetDocument().AddConsoleMessage(console_message);
+    }
+
+    // Buttons with an invoketarget will dispatch an InvokeEvent on the Invoker,
+    // and run HandleInvokeInternal to perform default logic.
     if (invokee) {
-      if (popoverTargetElement().popover) {
-        ConsoleMessage* console_message = MakeGarbageCollected<ConsoleMessage>(
-            mojom::blink::ConsoleMessageSource::kOther,
-            mojom::blink::ConsoleMessageLevel::kWarning,
-            "popovertarget is ignored on elements with invoketarget set.");
-        console_message->SetNodes(GetDocument().GetFrame(),
-                                  {this->GetDomNodeId()});
-        GetDocument().AddConsoleMessage(console_message);
-      }
       auto action = invokeAction();
       Event* invokeEvent =
           InvokeEvent::Create(event_type_names::kInvoke, action, this);
       invokee->DispatchEvent(*invokeEvent);
       if (!invokeEvent->defaultPrevented()) {
-        PopoverTriggerAction trigger = PopoverTriggerAction::kNone;
-        auto actionLower = action.LowerASCII();
-        if (actionLower == keywords::kAuto ||
-            actionLower == keywords::kTogglePopover.LowerASCII()) {
-          trigger = PopoverTriggerAction::kToggle;
-        } else if (actionLower == keywords::kShowPopover.LowerASCII()) {
-          trigger = PopoverTriggerAction::kShow;
-        } else if (actionLower == keywords::kHidePopover.LowerASCII()) {
-          trigger = PopoverTriggerAction::kHide;
-        }
-        if (invokee->PopoverType() != PopoverValueType::kNone &&
-            trigger != PopoverTriggerAction::kNone) {
-          HandlePopoverTriggering(invokee, trigger);
-        } else {
-          invokee->HandleInvokeInternal(actionLower);
-        }
+        invokee->HandleInvokeInternal(DynamicTo<HTMLElement>(this), action);
       }
-    } else {
-      auto popover = popoverTargetElement();
-      if (popover.popover) {
-        HandlePopoverTriggering(popover.popover, popover.action);
+
+    } else if (popover.popover) {
+      CHECK(!invokee);
+      auto trigger_support = SupportsPopoverTriggering();
+      CHECK_NE(trigger_support, PopoverTriggerSupport::kNone);
+      // Buttons with a popovertarget will invoke popovers, which is the same
+      // logic as an invoketarget with an appropriate invokeaction (e.g.
+      // togglePopover), sans the `InvokeEvent` dispatch. Calling
+      // `HandleInvokeInternal()` does not dispatch the event but can handle the
+      // popover triggering logic. `popovertargetaction` must also be mapped
+      // to the equivalent `invokeaction` string:
+      //  popovertargetaction=auto -> invokeaction=auto
+      //  popovertargetaction=auto -> invokeaction=auto
+      // We must check to ensure the action is one of the avilable popover
+      // invoker actions so that popovertargetaction= cannot be set to something
+      // like showModal.
+      if (popover.action != PopoverTriggerAction::kNone) {
+        auto action = g_empty_atom;
+
+        if (popover.action == PopoverTriggerAction::kToggle) {
+          action = keywords::kTogglePopover;
+        } else if (popover.action == PopoverTriggerAction::kShow) {
+          action = keywords::kShowPopover;
+        } else if (popover.action == PopoverTriggerAction::kHide) {
+          action = keywords::kHidePopover;
+        } else if (RuntimeEnabledFeatures::HTMLPopoverHintEnabled() &&
+                   popover.action == PopoverTriggerAction::kHover) {
+          action = keywords::kShowPopover;
+        }
+
+        CHECK_NE(action, g_empty_atom);
+        popover.popover->HandleInvokeInternal(DynamicTo<HTMLElement>(this),
+                                              action);
       }
     }
   }
   HTMLElement::DefaultEventHandler(event);
-}
-
-void HTMLFormControlElement::HandlePopoverTriggering(
-    HTMLElement* popover,
-    PopoverTriggerAction action) {
-  auto& document = GetDocument();
-  auto trigger_support = SupportsPopoverTriggering();
-  CHECK_NE(action, PopoverTriggerAction::kNone);
-  CHECK_NE(trigger_support, PopoverTriggerSupport::kNone);
-  // Note that the order is: `mousedown` which runs popover light dismiss
-  // code, then (for clicked elements) focus is set to the clicked
-  // element, then |DOMActivate| runs here. Also note that the light
-  // dismiss code will not hide popovers when an activating element is
-  // clicked. Taking that together, if the clicked control is a triggering
-  // element for a popover, light dismiss will do nothing, focus will be
-  // set to the triggering element, then this code will run and will set
-  // focus to the previously focused element. If instead the clicked
-  // control is not a triggering element, then the light dismiss code will
-  // hide the popover and set focus to the previously focused element,
-  // then the normal focus management code will reset focus to the clicked
-  // control.
-  bool can_show =
-      popover->IsPopoverReady(PopoverTriggerAction::kShow,
-                              /*exception_state=*/nullptr,
-                              /*include_event_handler_text=*/true, &document) &&
-      (action == PopoverTriggerAction::kToggle ||
-       action == PopoverTriggerAction::kShow ||
-       action == PopoverTriggerAction::kHover);
-  bool can_hide =
-      popover->IsPopoverReady(PopoverTriggerAction::kHide,
-                              /*exception_state=*/nullptr,
-                              /*include_event_handler_text=*/true, &document) &&
-      (action == PopoverTriggerAction::kToggle ||
-       action == PopoverTriggerAction::kHide);
-  if (can_hide) {
-    popover->HidePopoverInternal(
-        HidePopoverFocusBehavior::kFocusPreviousElement,
-        HidePopoverTransitionBehavior::kFireEventsAndWaitForTransitions,
-        /*exception_state=*/nullptr);
-  } else if (can_show) {
-    auto* button = DynamicTo<HTMLButtonElement>(this);
-    HTMLSelectListElement* selectlist =
-        button && RuntimeEnabledFeatures::HTMLSelectListElementEnabled()
-            ? button->OwnerSelectList()
-            : nullptr;
-    if (selectlist) {
-      if (!selectlist->IsDisabledFormControl()) {
-        selectlist->OpenListbox();
-      }
-    } else {
-      popover->InvokePopover(this);
-    }
-  }
 }
 
 void HTMLFormControlElement::SetHovered(bool hovered) {

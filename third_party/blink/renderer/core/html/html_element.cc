@@ -75,6 +75,7 @@
 #include "third_party/blink/renderer/core/html/custom/custom_element.h"
 #include "third_party/blink/renderer/core/html/custom/custom_element_registry.h"
 #include "third_party/blink/renderer/core/html/custom/element_internals.h"
+#include "third_party/blink/renderer/core/html/forms/html_button_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_form_control_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_form_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_input_element.h"
@@ -1428,7 +1429,8 @@ void HTMLElement::showPopover(ExceptionState& exception_state) {
 void HTMLElement::ShowPopoverInternal(Element* invoker,
                                       ExceptionState* exception_state) {
   if (!IsPopoverReady(PopoverTriggerAction::kShow, exception_state,
-                      /*include_event_handler_text=*/false, /*document=*/nullptr)) {
+                      /*include_event_handler_text=*/false,
+                      /*document=*/nullptr)) {
     CHECK(exception_state)
         << " Callers which aren't supposed to throw exceptions should not call "
            "ShowPopoverInternal when the Popover isn't in a valid state to be "
@@ -1722,7 +1724,8 @@ void HTMLElement::HidePopoverInternal(
     HidePopoverTransitionBehavior transition_behavior,
     ExceptionState* exception_state) {
   if (!IsPopoverReady(PopoverTriggerAction::kHide, exception_state,
-                      /*include_event_handler_text=*/true, /*document=*/nullptr)) {
+                      /*include_event_handler_text=*/true,
+                      /*document=*/nullptr)) {
     return;
   }
 
@@ -2271,6 +2274,68 @@ bool HTMLElement::DispatchFocusEvent(
                                      source_capabilities);
 }
 
+bool HTMLElement::HandleInvokeInternal(HTMLElement* invoker,
+                                       AtomicString& action) {
+  bool isPopoverAction =
+      EqualIgnoringASCIICase(action, keywords::kAuto) ||
+      EqualIgnoringASCIICase(action, keywords::kTogglePopover) ||
+      EqualIgnoringASCIICase(action, keywords::kShowPopover) ||
+      EqualIgnoringASCIICase(action, keywords::kHidePopover);
+
+  if (PopoverType() != PopoverValueType::kNone && isPopoverAction) {
+    auto& document = GetDocument();
+    // Note that the order is: `mousedown` which runs popover light dismiss
+    // code, then (for clicked elements) focus is set to the clicked
+    // element, then |DOMActivate| runs here. Also note that the light
+    // dismiss code will not hide popovers when an activating element is
+    // clicked. Taking that together, if the clicked control is a triggering
+    // element for a popover, light dismiss will do nothing, focus will be
+    // set to the triggering element, then this code will run and will set
+    // focus to the previously focused element. If instead the clicked
+    // control is not a triggering element, then the light dismiss code will
+    // hide the popover and set focus to the previously focused element,
+    // then the normal focus management code will reset focus to the clicked
+    // control.
+    bool can_show =
+        IsPopoverReady(PopoverTriggerAction::kShow,
+                       /*exception_state=*/nullptr,
+                       /*include_event_handler_text=*/true, &document) &&
+        (EqualIgnoringASCIICase(action, keywords::kAuto) ||
+         EqualIgnoringASCIICase(action, keywords::kTogglePopover) ||
+         EqualIgnoringASCIICase(action, keywords::kShowPopover));
+    bool can_hide =
+        IsPopoverReady(PopoverTriggerAction::kHide,
+                       /*exception_state=*/nullptr,
+                       /*include_event_handler_text=*/true, &document) &&
+        (EqualIgnoringASCIICase(action, keywords::kAuto) ||
+         EqualIgnoringASCIICase(action, keywords::kTogglePopover) ||
+         EqualIgnoringASCIICase(action, keywords::kHidePopover));
+    if (can_hide) {
+      HidePopoverInternal(
+          HidePopoverFocusBehavior::kFocusPreviousElement,
+          HidePopoverTransitionBehavior::kFireEventsAndWaitForTransitions,
+          /*exception_state=*/nullptr);
+      return true;
+    } else if (can_show) {
+      auto* button = DynamicTo<HTMLButtonElement>(invoker);
+      HTMLSelectListElement* selectlist =
+          button && RuntimeEnabledFeatures::HTMLSelectListElementEnabled()
+              ? button->OwnerSelectList()
+              : nullptr;
+      if (selectlist) {
+        if (!selectlist->IsDisabledFormControl()) {
+          selectlist->OpenListbox();
+          return true;
+        }
+      } else {
+        InvokePopover(invoker);
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 const AtomicString& HTMLElement::autocapitalize() const {
   DEFINE_STATIC_LOCAL(const AtomicString, kOff, ("off"));
   DEFINE_STATIC_LOCAL(const AtomicString, kNone, ("none"));
@@ -2367,11 +2432,11 @@ void HTMLElement::setTranslate(bool enable) {
   setAttribute(html_names::kTranslateAttr, AtomicString(enable ? "yes" : "no"));
 }
 
-// Returns the conforming 'dir' value associated with the state the attribute is
-// in (in its canonical case), if any, or the empty string if the attribute is
-// in a state that has no associated keyword value or if the attribute is not in
-// a defined state (e.g. the attribute is missing and there is no missing value
-// default).
+// Returns the conforming 'dir' value associated with the state the attribute
+// is in (in its canonical case), if any, or the empty string if the attribute
+// is in a state that has no associated keyword value or if the attribute is
+// not in a defined state (e.g. the attribute is missing and there is no
+// missing value default).
 // http://www.whatwg.org/specs/web-apps/current-work/multipage/common-dom-interfaces.html#limited-to-only-known-values
 static inline const AtomicString& ToValidDirValue(const AtomicString& value) {
   DEFINE_STATIC_LOCAL(const AtomicString, ltr_value, ("ltr"));
@@ -2682,8 +2747,8 @@ void HTMLElement::AddHTMLLengthToStyle(MutableCSSPropertyValueSet* style,
 static Color ParseColorStringWithCrazyLegacyRules(const String& color_string) {
   // Per spec, only look at the first 128 digits of the string.
   const size_t kMaxColorLength = 128;
-  // We'll pad the buffer with two extra 0s later, so reserve two more than the
-  // max.
+  // We'll pad the buffer with two extra 0s later, so reserve two more than
+  // the max.
   Vector<char, kMaxColorLength + 2> digit_buffer;
 
   wtf_size_t i = 0;
@@ -2764,9 +2829,9 @@ bool HTMLElement::ParseColorWithLegacyRules(const String& attribute_value,
     return false;
 
   // If the string is a 3/6-digit hex color or a named CSS color, use that.
-  // Apply legacy rules otherwise. Note color.setFromString() accepts 4/8-digit
-  // hex color, so restrict its use with length checks here to support legacy
-  // HTML attributes.
+  // Apply legacy rules otherwise. Note color.setFromString() accepts
+  // 4/8-digit hex color, so restrict its use with length checks here to
+  // support legacy HTML attributes.
 
   bool success = false;
   if ((color_string.length() == 4 || color_string.length() == 7) &&
@@ -2863,9 +2928,9 @@ void HTMLElement::HandleKeypressEvent(KeyboardEvent& event) {
     return;
   GetDocument().UpdateStyleAndLayoutTree();
   // if the element is a text form control (like <input type=text> or
-  // <textarea>) or has contentEditable attribute on, we should enter a space or
-  // newline even in spatial navigation mode instead of handling it as a "click"
-  // action.
+  // <textarea>) or has contentEditable attribute on, we should enter a space
+  // or newline even in spatial navigation mode instead of handling it as a
+  // "click" action.
   if (IsTextControl() || IsEditable(*this))
     return;
   int char_code = event.charCode();
@@ -2898,7 +2963,8 @@ int HTMLElement::OffsetTopOrLeft(bool top) {
   // This loop adds up all of the offsetTop/offsetLeft values for this and
   // parent shadow-hidden offsetParents up the flat tree. If
   // |ancestor_tree_scopes| doesn't contain the next |offset_parent|'s
-  // TreeScope, then we know that |offset_parent| is shadow-hidden from |this|.
+  // TreeScope, then we know that |offset_parent| is shadow-hidden from
+  // |this|.
   do {
     // offset_parent->OffsetParent() may update style and layout:
     Element* next_offset_parent = offset_parent->OffsetParent();
@@ -2976,7 +3042,8 @@ void HTMLElement::UpdateDescendantDirectionality(TextDirection direction) {
       if (auto* slot = ToHTMLSlotElementIfSupportsAssignmentOrNull(node)) {
         ShadowRoot* root = slot->ContainingShadowRoot();
         // Defer to update the directionality of slot's descendant to avoid
-        // recalcuating slot assignment in FlatTreeTraversal when updating slot.
+        // recalcuating slot assignment in FlatTreeTraversal when updating
+        // slot.
         if (root->NeedsSlotAssignmentRecalc()) {
           node = FlatTreeTraversal::NextSkippingChildren(*node, this);
           continue;
@@ -3095,15 +3162,15 @@ ElementInternals* HTMLElement::attachInternals(
   // 1. If this's is value is not null, then throw a "NotSupportedError"
   // DOMException.
   if (IsValue()) {
-    exception_state.ThrowDOMException(
-        DOMExceptionCode::kNotSupportedError,
-        "Unable to attach ElementInternals to a customized built-in element.");
+    exception_state.ThrowDOMException(DOMExceptionCode::kNotSupportedError,
+                                      "Unable to attach ElementInternals to "
+                                      "a customized built-in element.");
     return nullptr;
   }
 
   // 2. Let definition be the result of looking up a custom element definition
-  // given this's node document, its namespace, its local name, and null as the
-  // is value.
+  // given this's node document, its namespace, its local name, and null as
+  // the is value.
   CustomElementRegistry* registry = CustomElement::Registry(*this);
   auto* definition =
       registry ? registry->DefinitionForName(localName()) : nullptr;
@@ -3125,8 +3192,8 @@ ElementInternals* HTMLElement::attachInternals(
     return nullptr;
   }
 
-  // 5. If this's attached internals is true, then throw an "NotSupportedError"
-  // DOMException.
+  // 5. If this's attached internals is true, then throw an
+  // "NotSupportedError" DOMException.
   if (DidAttachInternals()) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kNotSupportedError,
@@ -3134,8 +3201,8 @@ ElementInternals* HTMLElement::attachInternals(
     return nullptr;
   }
 
-  // 6. If this's custom element state is not "precustomized" or "custom", then
-  // throw a "NotSupportedError" DOMException.
+  // 6. If this's custom element state is not "precustomized" or "custom",
+  // then throw a "NotSupportedError" DOMException.
   if (GetCustomElementState() != CustomElementState::kCustom &&
       GetCustomElementState() != CustomElementState::kPreCustomized) {
     exception_state.ThrowDOMException(

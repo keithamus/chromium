@@ -104,7 +104,6 @@ class CORE_EXPORT HTMLElement : public Element {
   DEFINE_WRAPPERTYPEINFO();
 
  public:
-
   HTMLElement(const QualifiedName& tag_name, Document&, ConstructionType);
 
   bool HasTagName(const HTMLQualifiedName& name) const {
@@ -298,10 +297,13 @@ class CORE_EXPORT HTMLElement : public Element {
       InputDeviceCapabilities* source_capabilities) override;
 
   // This allows customization of how Invokes are handled, per element.
-  // The default HTMLElement has no default invoke behaviour, but specific
-  // element subclasses, such as HTMLDialogElement, do.
+  // The default HTMLElement behavior handles popovers, and specific
+  // element subclasses - such as HTMLDialogElement - can handle
+  // other invocation actions such as showModal. Implementations should return
+  // `true` if they have handled, so that overloads can exit early.
+  //
   // See: crbug.com/1490919, https://open-ui.org/components/invokers.explainer/
-  virtual void HandleInvokeInternal(AtomicString& action) {}
+  virtual bool HandleInvokeInternal(HTMLElement* invoker, AtomicString& action);
 
  protected:
   bool SupportsFocus() const override;
